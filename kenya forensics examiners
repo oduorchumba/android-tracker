@@ -1,0 +1,67 @@
+# server/app.py
+from flask import Flask, request, jsonify, abort
+from functools import wraps
+import os
+import time
+import json
+from pathlib import Path
+
+API_KEY = os.environ.get("TRACKER_API_KEY", "CHANGE_THIS_TO_A_STRONG_KEY")
+DATA_DIR = Path("data")
+DATA_DIR.mkdir(exist_ok=True)
+
+app = Flask(__name__)
+
+def require_api_key(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        key = request.headers.get("X-API-KEY") or request.args.get("api_key")
+        if not key or key != API_KEY:
+            return jsonify({"error": "Unauthorized"}), 401
+        return f(*args, **kwargs)
+    return decorated
+
+@app.route("/ping", methods=["GET"])
+def ping():
+    return jsonify({"status": "ok", "time": int(time.time())})
+
+@app.route("/locations", methods=["POST"])
+@require_api_key
+def receive_location():
+    """
+    Accepts JSON:
+    {
+      "device_id": "device-123",
+      "timestamp": 1680000000,
+      "lat": 12.345678,
+      "lon": 98.765432,
+      "accuracy": 12.3
+    }
+    """
+    if not request.is_json:
+        return jsonify({"error": "Expected JSON"}), 400
+    data = request.get_json()
+    required = {"device_id", "timestamp", "lat", "lon"}
+    if not required.issubset(data):
+        return jsonify({"error": f"Missing fields: {required - set(data.keys())}"}), 400
+
+    device = data["device_id"]
+    rec = {
+        "server_received": int(time.time()),
+        "device_id": device,
+        "timestamp": int(data["timestamp"]),
+        "lat": float(data["lat"]),
+        "lon": float(data["lon"]),
+        "accuracy": float(data.get("accuracy", 0.0)),
+        "meta": data.get("meta", {})
+    }
+
+    out_file = DATA_DIR / f"{device}.jsonl"
+    with open(out_file, "a", encoding="utf-8") as f:
+        f.write(json.dumps(rec) + "\n")
+
+    return jsonify({"status": "saved"})
+
+if __name__ == "__main__":
+    # Development server only. Use gunicorn/uvicorn + HTTPS in production.
+    app.run(host="0.0.0.0", port=5000, debug=True)
